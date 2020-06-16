@@ -31,6 +31,7 @@
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
+#include <wlr/xwayland.h>
 #include <xkbcommon/xkbcommon.h>
 
 /* macros */
@@ -205,8 +206,9 @@ static const char broken[] = "broken";
 static struct wl_display *dpy;
 static struct wlr_backend *backend;
 static struct wlr_renderer *drw;
-
+static struct wlr_compositor *compositor;
 static struct wlr_xdg_shell *xdg_shell;
+static struct wlr_xwayland *xwayland;
 static struct wl_list clients; /* tiling order */
 static struct wl_list fstack;  /* focus order */
 static struct wl_list stack;   /* stacking z-order */
@@ -239,6 +241,10 @@ static struct wl_listener new_xdg_surface = {.notify = createnotify};
 static struct wl_listener request_cursor = {.notify = setcursor};
 static struct wl_listener request_set_psel = {.notify = setpsel};
 static struct wl_listener request_set_sel = {.notify = setsel};
+
+/* xwayland handlers */
+static struct wl_listener xwayland_surface;
+static struct wl_listener xwayland_ready;
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
@@ -1282,7 +1288,7 @@ setup(void)
 	 * to dig your fingers in and play with their behavior if you want. Note that
 	 * the clients cannot set the selection directly without compositor approval,
 	 * see the setsel() function. */
-	wlr_compositor_create(dpy, drw);
+	compositor = wlr_compositor_create(dpy, drw);
 	wlr_screencopy_manager_v1_create(dpy);
 	wlr_data_device_manager_create(dpy);
 	wlr_primary_selection_v1_device_manager_create(dpy);
@@ -1360,6 +1366,33 @@ setup(void)
 			&request_set_sel);
 	wl_signal_add(&seat->events.request_set_primary_selection,
 			&request_set_psel);
+}
+
+static void handle_xwayland_ready(struct wl_listener *listener, void *data)
+{
+	fprintf(stderr, "handle_xwayland_ready\n");
+}
+
+static void handle_xwayland_surface(struct wl_listener *listener, void *data)
+{
+	fprintf(stderr, "handle_xwayland_surface\n");
+}
+
+void
+setupxwayland()
+{
+	/* AMC todo: document and move into setup */
+	xwayland = wlr_xwayland_create(dpy, compositor, false);
+	if (xwayland) {
+		wl_signal_add(&xwayland->events.ready, &xwayland_ready);
+		xwayland_ready.notify = handle_xwayland_ready;
+		wl_signal_add(&xwayland->events.new_surface, &xwayland_surface);
+		xwayland_surface.notify = handle_xwayland_surface;
+
+		setenv("DISPLAY", xwayland->display_name, true);
+	} else {
+		fprintf(stderr, "failed to setup xwayland X server, continuing without it\n");
+	}
 }
 
 void
@@ -1547,9 +1580,12 @@ main(int argc, char *argv[])
 	dpy = wl_display_create();
 
 	setup();
+	setupxwayland();
 	run(startup_cmd);
 
 	/* Once wl_display_run returns, we shut down the server. */
+	if (xwayland)
+		wlr_xwayland_destroy(xwayland);
 	wl_display_destroy_clients(dpy);
 	wl_display_destroy(dpy);
 	return EXIT_SUCCESS;
