@@ -32,5 +32,8 @@ dwl: xdg-shell-protocol.o
 clean:
 	rm -f dwl *.o xdg-shell-protocol.h xdg-shell-protocol.c
 
+ctags:
+	ctags-c xdg-shell-protocol.c xdg-shell-protocol.h dwl.c $(CFLAGS)
+
 .DEFAULT_GOAL=dwl
 .PHONY: clean
