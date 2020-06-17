@@ -1368,14 +1368,265 @@ setup(void)
 			&request_set_psel);
 }
 
-static void handle_xwayland_ready(struct wl_listener *listener, void *data)
+enum atom_name {
+	NET_WM_WINDOW_TYPE_NORMAL,
+	NET_WM_WINDOW_TYPE_DIALOG,
+	NET_WM_WINDOW_TYPE_UTILITY,
+	NET_WM_WINDOW_TYPE_TOOLBAR,
+	NET_WM_WINDOW_TYPE_SPLASH,
+	NET_WM_WINDOW_TYPE_MENU,
+	NET_WM_WINDOW_TYPE_DROPDOWN_MENU,
+	NET_WM_WINDOW_TYPE_POPUP_MENU,
+	NET_WM_WINDOW_TYPE_TOOLTIP,
+	NET_WM_WINDOW_TYPE_NOTIFICATION,
+	NET_WM_STATE_MODAL,
+	ATOM_LAST,
+};
+
+static const char *atom_map[ATOM_LAST] = {
+	"_NET_WM_WINDOW_TYPE_NORMAL",
+	"_NET_WM_WINDOW_TYPE_DIALOG",
+	"_NET_WM_WINDOW_TYPE_UTILITY",
+	"_NET_WM_WINDOW_TYPE_TOOLBAR",
+	"_NET_WM_WINDOW_TYPE_SPLASH",
+	"_NET_WM_WINDOW_TYPE_MENU",
+	"_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
+	"_NET_WM_WINDOW_TYPE_POPUP_MENU",
+	"_NET_WM_WINDOW_TYPE_TOOLTIP",
+	"_NET_WM_WINDOW_TYPE_NOTIFICATION",
+	"_NET_WM_STATE_MODAL",
+};
+
+xcb_atom_t atoms[ATOM_LAST];
+
+static void
+handle_xwayland_ready(struct wl_listener *listener, void *data)
 {
+	xcb_connection_t *xcb_conn;
+	int err;
+	size_t i;
+
 	fprintf(stderr, "handle_xwayland_ready\n");
+
+	xcb_conn = xcb_connect(NULL, NULL);
+	err = xcb_connection_has_error(xcb_conn);
+	if (err) {
+		/* AMC todo: handle or squish */
+		wlr_log(WLR_ERROR, "XCB connect failed: %d", err);
+		return;
+	}
+
+	for (i = 0; i < ATOM_LAST; i++) {
+		xcb_intern_atom_cookie_t cookie = xcb_intern_atom(xcb_conn, 0, strlen(atom_map[i]), atom_map[i]);
+		xcb_generic_error_t *error = NULL;
+		xcb_intern_atom_reply_t *reply =
+			xcb_intern_atom_reply(xcb_conn, cookie, &error);
+		if (reply != NULL && error == NULL) {
+			atoms[i] = reply->atom;
+		}
+		free(reply);
+
+		if (error != NULL) {
+			/* AMC todo: handle or squish */
+			wlr_log(WLR_ERROR, "could not resolve atom %s, X11 error code %d",
+					atom_map[i], error->error_code);
+			free(error);
+			break;
+		}
+	}
+
+	xcb_disconnect(xcb_conn);
 }
 
-static void handle_xwayland_surface(struct wl_listener *listener, void *data)
+struct sway_xwayland_unmanaged {
+	struct wlr_xwayland_surface *wlr_xwayland_surface;
+	struct wl_list link;
+
+	int lx, ly;
+
+	struct wl_listener request_configure;
+	struct wl_listener request_fullscreen;
+	struct wl_listener commit;
+	struct wl_listener map;
+	struct wl_listener unmap;
+	struct wl_listener destroy;
+};
+
+static void
+unmanaged_handle_request_configure(struct wl_listener *listener, void *data) {
+	struct sway_xwayland_unmanaged *surface = wl_container_of(listener, surface, request_configure);
+	struct wlr_xwayland_surface *xsurface = surface->wlr_xwayland_surface;
+	struct wlr_xwayland_surface_configure_event *ev = data;
+
+	wlr_xwayland_surface_configure(xsurface, ev->x, ev->y, ev->width, ev->height);
+}
+
+static void
+unmanaged_handle_commit(struct wl_listener *listener, void *data) {
+	struct sway_xwayland_unmanaged *surface = wl_container_of(listener, surface, commit);
+	struct wlr_xwayland_surface *xsurface = surface->wlr_xwayland_surface;
+
+	if (xsurface->x != surface->lx || xsurface->y != surface->ly) {
+		// Surface has moved
+		/* AMC todo: handle damage */
+		/* desktop_damage_surface(xsurface->surface, surface->lx, surface->ly, true); */
+		surface->lx = xsurface->x;
+		surface->ly = xsurface->y;
+		/* AMC todo: handle damage */
+		/* desktop_damage_surface(xsurface->surface, surface->lx, surface->ly, true); */
+	} else {
+		/* AMC todo: handle damage */
+		/* desktop_damage_surface(xsurface->surface, xsurface->x, xsurface->y, false); */
+	}
+}
+
+/* AMC todo: integrate this with focusclient */
+void
+seat_set_focus_surface(struct wlr_surface *surface/* , bool unfocus */) {
+	/* if (seat->has_focus && unfocus) {
+		struct sway_node *focus = seat_get_focus(seat);
+		seat_send_unfocus(focus, seat);
+		seat->has_focus = false;
+	}
+	seat_keyboard_notify_enter(seat, surface);
+	seat_tablet_pads_notify_enter(seat, surface); */
+
+	struct wlr_keyboard *kb;
+
+	if (!surface) {
+		wlr_seat_keyboard_notify_clear_focus(seat);
+	} else /*if (surface != psurface)*/ {
+		kb = wlr_seat_get_keyboard(seat);
+		wlr_seat_keyboard_notify_enter(seat, surface, kb->keycodes, kb->num_keycodes, &kb->modifiers);
+	}
+}
+
+static void
+unmanaged_handle_map(struct wl_listener *listener, void *data) {
+	struct sway_xwayland_unmanaged *surface = wl_container_of(listener, surface, map);
+	struct wlr_xwayland_surface *xsurface = surface->wlr_xwayland_surface;
+
+	/* AMC todo: add a similar data structure */
+	/* wl_list_insert(root->xwayland_unmanaged.prev, &surface->link); */
+
+	wl_signal_add(&xsurface->surface->events.commit, &surface->commit);
+	surface->commit.notify = unmanaged_handle_commit;
+
+	surface->lx = xsurface->x;
+	surface->ly = xsurface->y;
+	/* AMC todo: handle damage */
+	/* desktop_damage_surface(xsurface->surface, surface->lx, surface->ly, true); */
+
+	if (wlr_xwayland_or_surface_wants_focus(xsurface)) {
+		wlr_xwayland_set_seat(xwayland, seat);
+		seat_set_focus_surface(xsurface->surface);
+	}
+}
+
+static struct sway_xwayland_unmanaged *
+create_unmanaged(struct wlr_xwayland_surface *xsurface) {
+	struct sway_xwayland_unmanaged *surface;
+
+	surface = calloc(1, sizeof(struct sway_xwayland_unmanaged));
+	if (surface == NULL) {
+		/* AMC todo: handle or squish */
+		wlr_log(WLR_ERROR, "Allocation failed");
+		return NULL;
+	}
+
+	surface->wlr_xwayland_surface = xsurface;
+
+	wl_signal_add(&xsurface->events.request_configure, &surface->request_configure);
+	surface->request_configure.notify = unmanaged_handle_request_configure;
+
+	wl_signal_add(&xsurface->events.map, &surface->map);
+	surface->map.notify = unmanaged_handle_map;
+
+/*
+	wl_signal_add(&xsurface->events.unmap, &surface->unmap);
+	surface->unmap.notify = unmanaged_handle_unmap;
+
+	wl_signal_add(&xsurface->events.destroy, &surface->destroy);
+	surface->destroy.notify = unmanaged_handle_destroy;
+ */
+	return surface;
+}
+
+static void
+handle_xwayland_surface(struct wl_listener *listener, void *data)
 {
+	struct wlr_xwayland_surface *xsurface = data;
+
 	fprintf(stderr, "handle_xwayland_surface\n");
+
+	if (xsurface->override_redirect) {
+		wlr_log(WLR_DEBUG, "New xwayland unmanaged surface");
+		create_unmanaged(xsurface);
+		return;
+	}
+
+	wlr_log(WLR_DEBUG, "New xwayland surface title='%s' class='%s'",
+		xsurface->title, xsurface->class);
+
+	/* struct sway_xwayland_view *xwayland_view =
+		calloc(1, sizeof(struct sway_xwayland_view));
+	if (!sway_assert(xwayland_view, "Failed to allocate view")) {
+		return;
+	}
+
+	view_init(&xwayland_view->view, SWAY_VIEW_XWAYLAND, &view_impl);
+	xwayland_view->view.wlr_xwayland_surface = xsurface;
+
+	wl_signal_add(&xsurface->events.destroy, &xwayland_view->destroy);
+	xwayland_view->destroy.notify = handle_destroy;
+
+	wl_signal_add(&xsurface->events.request_configure,
+		&xwayland_view->request_configure);
+	xwayland_view->request_configure.notify = handle_request_configure;
+
+	wl_signal_add(&xsurface->events.request_fullscreen,
+		&xwayland_view->request_fullscreen);
+	xwayland_view->request_fullscreen.notify = handle_request_fullscreen;
+
+	wl_signal_add(&xsurface->events.request_activate,
+		&xwayland_view->request_activate);
+	xwayland_view->request_activate.notify = handle_request_activate;
+
+	wl_signal_add(&xsurface->events.request_move,
+		&xwayland_view->request_move);
+	xwayland_view->request_move.notify = handle_request_move;
+
+	wl_signal_add(&xsurface->events.request_resize,
+		&xwayland_view->request_resize);
+	xwayland_view->request_resize.notify = handle_request_resize;
+
+	wl_signal_add(&xsurface->events.set_title, &xwayland_view->set_title);
+	xwayland_view->set_title.notify = handle_set_title;
+
+	wl_signal_add(&xsurface->events.set_class, &xwayland_view->set_class);
+	xwayland_view->set_class.notify = handle_set_class;
+
+	wl_signal_add(&xsurface->events.set_role, &xwayland_view->set_role);
+	xwayland_view->set_role.notify = handle_set_role;
+
+	wl_signal_add(&xsurface->events.set_window_type,
+			&xwayland_view->set_window_type);
+	xwayland_view->set_window_type.notify = handle_set_window_type;
+
+	wl_signal_add(&xsurface->events.set_hints, &xwayland_view->set_hints);
+	xwayland_view->set_hints.notify = handle_set_hints;
+
+	wl_signal_add(&xsurface->events.set_decorations,
+			&xwayland_view->set_decorations);
+	xwayland_view->set_decorations.notify = handle_set_decorations;
+
+	wl_signal_add(&xsurface->events.unmap, &xwayland_view->unmap);
+	xwayland_view->unmap.notify = handle_unmap;
+
+	wl_signal_add(&xsurface->events.map, &xwayland_view->map);
+	xwayland_view->map.notify = handle_map;
+
+	xsurface->data = xwayland_view; */
 }
 
 void
@@ -1391,7 +1642,7 @@ setupxwayland()
 
 		setenv("DISPLAY", xwayland->display_name, true);
 	} else {
-		fprintf(stderr, "failed to setup xwayland X server, continuing without it\n");
+		fprintf(stderr, "failed to setup XWayland X server, continuing without it\n");
 	}
 }
 
