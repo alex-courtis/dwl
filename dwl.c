@@ -65,7 +65,9 @@ typedef struct {
 	struct wl_list link;
 	struct wl_list flink;
 	struct wl_list slink;
+	/* AMC todo: union these two */
 	struct wlr_xdg_surface *xdg_surface;
+	struct wlr_xwayland_surface *xwayland_surface;
 	struct wl_listener map;
 	struct wl_listener unmap;
 	struct wl_listener destroy;
@@ -1523,6 +1525,51 @@ unmanaged_handle_map(struct wl_listener *listener, void *data) {
 	}
 }
 
+static void
+unmanaged_handle_unmap(struct wl_listener *listener, void *data) {
+	struct sway_xwayland_unmanaged *surface = wl_container_of(listener, surface, unmap);
+	struct wlr_xwayland_surface *xsurface = surface->wlr_xwayland_surface;
+	/* AMC todo: handle damage */
+	/* desktop_damage_surface(xsurface->surface, xsurface->x, xsurface->y, true); */
+	wl_list_remove(&surface->link);
+	wl_list_remove(&surface->commit.link);
+
+	if (seat->keyboard_state.focused_surface == xsurface->surface) {
+/*
+		// Try to find another unmanaged surface from the same process to pass
+		// focus to. This is necessary because some applications (e.g. Jetbrains
+		// IDEs) represent their multi-level menus as unmanaged surfaces, and
+		// when closing a submenu, the main menu should get input focus.
+		struct sway_xwayland_unmanaged *current;
+		wl_list_for_each(current, &root->xwayland_unmanaged, link) {
+			struct wlr_xwayland_surface *prev_xsurface =
+				current->wlr_xwayland_surface;
+			if (prev_xsurface->pid == xsurface->pid &&
+					wlr_xwayland_or_surface_wants_focus(prev_xsurface)) {
+				seat_set_focus_surface(seat, prev_xsurface->surface, false);
+				return;
+			}
+		}
+ */
+		/* // Restore focus
+		struct sway_node *previous = seat_get_focus_inactive(seat, &root->node);
+		if (previous) {
+			// Hack to get seat to re-focus the return value of get_focus
+			seat_set_focus(seat, NULL);
+			seat_set_focus(seat, previous);
+		} */
+	}
+}
+
+static void
+unmanaged_handle_destroy(struct wl_listener *listener, void *data) {
+	struct sway_xwayland_unmanaged *surface = wl_container_of(listener, surface, destroy);
+	wl_list_remove(&surface->map.link);
+	wl_list_remove(&surface->unmap.link);
+	wl_list_remove(&surface->destroy.link);
+	free(surface);
+}
+
 static struct sway_xwayland_unmanaged *
 create_unmanaged(struct wlr_xwayland_surface *xsurface) {
 	struct sway_xwayland_unmanaged *surface;
@@ -1542,13 +1589,12 @@ create_unmanaged(struct wlr_xwayland_surface *xsurface) {
 	wl_signal_add(&xsurface->events.map, &surface->map);
 	surface->map.notify = unmanaged_handle_map;
 
-/*
 	wl_signal_add(&xsurface->events.unmap, &surface->unmap);
 	surface->unmap.notify = unmanaged_handle_unmap;
 
 	wl_signal_add(&xsurface->events.destroy, &surface->destroy);
 	surface->destroy.notify = unmanaged_handle_destroy;
- */
+
 	return surface;
 }
 
@@ -1556,6 +1602,7 @@ static void
 handle_xwayland_surface(struct wl_listener *listener, void *data)
 {
 	struct wlr_xwayland_surface *xsurface = data;
+	Client *c;
 
 	fprintf(stderr, "handle_xwayland_surface\n");
 
@@ -1568,65 +1615,67 @@ handle_xwayland_surface(struct wl_listener *listener, void *data)
 	wlr_log(WLR_DEBUG, "New xwayland surface title='%s' class='%s'",
 		xsurface->title, xsurface->class);
 
-	/* struct sway_xwayland_view *xwayland_view =
+	/* xwayland_view = calloc(1, sizeof(struct sway_xwayland_view));
+
+	struct sway_xwayland_view *xwayland_view =
 		calloc(1, sizeof(struct sway_xwayland_view));
 	if (!sway_assert(xwayland_view, "Failed to allocate view")) {
 		return;
 	}
 
 	view_init(&xwayland_view->view, SWAY_VIEW_XWAYLAND, &view_impl);
-	xwayland_view->view.wlr_xwayland_surface = xsurface;
+	xwayland_view->view.wlr_xwayland_surface = xsurface; */
 
-	wl_signal_add(&xsurface->events.destroy, &xwayland_view->destroy);
-	xwayland_view->destroy.notify = handle_destroy;
+	/* AMC todo: make this happen in createnotify */
+	c = xsurface->data = calloc(1, sizeof(*c));
+	c->xwayland_surface = xsurface;
+	c->bw = borderpx;
 
-	wl_signal_add(&xsurface->events.request_configure,
-		&xwayland_view->request_configure);
-	xwayland_view->request_configure.notify = handle_request_configure;
+	/* Tell the client not to try anything fancy */
+	wlr_xdg_toplevel_set_tiled(c->xdg_surface, WLR_EDGE_TOP |
+			WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT);
 
-	wl_signal_add(&xsurface->events.request_fullscreen,
-		&xwayland_view->request_fullscreen);
-	xwayland_view->request_fullscreen.notify = handle_request_fullscreen;
+	/* wl_signal_add(&xsurface->events.destroy, &xwayland_view->destroy); */
+	/* xwayland_view->destroy.notify = handle_destroy; */
 
-	wl_signal_add(&xsurface->events.request_activate,
-		&xwayland_view->request_activate);
-	xwayland_view->request_activate.notify = handle_request_activate;
+	/* wl_signal_add(&xsurface->events.request_configure, &xwayland_view->request_configure); */
+	/* xwayland_view->request_configure.notify = handle_request_configure; */
 
-	wl_signal_add(&xsurface->events.request_move,
-		&xwayland_view->request_move);
-	xwayland_view->request_move.notify = handle_request_move;
+	/* wl_signal_add(&xsurface->events.request_fullscreen, &xwayland_view->request_fullscreen); */
+	/* xwayland_view->request_fullscreen.notify = handle_request_fullscreen; */
 
-	wl_signal_add(&xsurface->events.request_resize,
-		&xwayland_view->request_resize);
-	xwayland_view->request_resize.notify = handle_request_resize;
+	/* wl_signal_add(&xsurface->events.request_activate, &xwayland_view->request_activate); */
+	/* xwayland_view->request_activate.notify = handle_request_activate; */
 
-	wl_signal_add(&xsurface->events.set_title, &xwayland_view->set_title);
-	xwayland_view->set_title.notify = handle_set_title;
+	/* wl_signal_add(&xsurface->events.request_move, &xwayland_view->request_move); */
+	/* xwayland_view->request_move.notify = handle_request_move; */
 
-	wl_signal_add(&xsurface->events.set_class, &xwayland_view->set_class);
-	xwayland_view->set_class.notify = handle_set_class;
+	/* wl_signal_add(&xsurface->events.request_resize, &xwayland_view->request_resize); */
+	/* xwayland_view->request_resize.notify = handle_request_resize; */
 
-	wl_signal_add(&xsurface->events.set_role, &xwayland_view->set_role);
-	xwayland_view->set_role.notify = handle_set_role;
+	/* wl_signal_add(&xsurface->events.set_title, &xwayland_view->set_title); */
+	/* xwayland_view->set_title.notify = handle_set_title; */
 
-	wl_signal_add(&xsurface->events.set_window_type,
-			&xwayland_view->set_window_type);
-	xwayland_view->set_window_type.notify = handle_set_window_type;
+	/* wl_signal_add(&xsurface->events.set_class, &xwayland_view->set_class); */
+	/* xwayland_view->set_class.notify = handle_set_class; */
 
-	wl_signal_add(&xsurface->events.set_hints, &xwayland_view->set_hints);
-	xwayland_view->set_hints.notify = handle_set_hints;
+	/* wl_signal_add(&xsurface->events.set_role, &xwayland_view->set_role); */
+	/* xwayland_view->set_role.notify = handle_set_role; */
 
-	wl_signal_add(&xsurface->events.set_decorations,
-			&xwayland_view->set_decorations);
-	xwayland_view->set_decorations.notify = handle_set_decorations;
+	/* wl_signal_add(&xsurface->events.set_window_type, &xwayland_view->set_window_type); */
+	/* xwayland_view->set_window_type.notify = handle_set_window_type; */
 
-	wl_signal_add(&xsurface->events.unmap, &xwayland_view->unmap);
-	xwayland_view->unmap.notify = handle_unmap;
+	/* wl_signal_add(&xsurface->events.set_hints, &xwayland_view->set_hints); */
+	/* xwayland_view->set_hints.notify = handle_set_hints; */
 
-	wl_signal_add(&xsurface->events.map, &xwayland_view->map);
-	xwayland_view->map.notify = handle_map;
+	/* wl_signal_add(&xsurface->events.set_decorations, &xwayland_view->set_decorations); */
+	/* xwayland_view->set_decorations.notify = handle_set_decorations; */
 
-	xsurface->data = xwayland_view; */
+	/* wl_signal_add(&xsurface->events.unmap, &xwayland_view->unmap); */
+	/* xwayland_view->unmap.notify = handle_unmap; */
+
+	/* wl_signal_add(&xsurface->events.map, &xwayland_view->map); */
+	/* xwayland_view->map.notify = handle_map; */
 }
 
 void
