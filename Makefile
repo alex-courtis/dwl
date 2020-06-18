@@ -29,6 +29,9 @@ dwl.o: config.h xdg-shell-protocol.h
 
 dwl: xdg-shell-protocol.o
 
+copy: dwl
+	scp dwl dwl.c duke:/home/alex
+
 clean:
 	rm -f dwl *.o xdg-shell-protocol.h xdg-shell-protocol.c
 

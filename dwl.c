@@ -65,7 +65,6 @@ typedef struct {
 	struct wl_list link;
 	struct wl_list flink;
 	struct wl_list slink;
-	/* AMC todo: union these two */
 	struct wlr_xdg_surface *xdg_surface;
 	struct wlr_xwayland_surface *xwayland_surface;
 	struct wl_listener map;
@@ -152,6 +151,7 @@ static void chvt(const Arg *arg);
 static void createkeyboard(struct wlr_input_device *device);
 static void createmon(struct wl_listener *listener, void *data);
 static void createnotify(struct wl_listener *listener, void *data);
+static void createnotifyxw(struct wl_listener *listener, void *data);
 static void createpointer(struct wlr_input_device *device);
 static void createxdeco(struct wl_listener *listener, void *data);
 static void cursorframe(struct wl_listener *listener, void *data);
@@ -169,6 +169,7 @@ static void keypress(struct wl_listener *listener, void *data);
 static void keypressmod(struct wl_listener *listener, void *data);
 static Client *lastfocused(void);
 static void maprequest(struct wl_listener *listener, void *data);
+static void maprequestxw(struct wl_listener *listener, void *data);
 static void motionabsolute(struct wl_listener *listener, void *data);
 static void motionnotify(uint32_t time);
 static void motionrelative(struct wl_listener *listener, void *data);
@@ -176,6 +177,7 @@ static void moveresize(const Arg *arg);
 static void pointerfocus(Client *c, struct wlr_surface *surface,
 		double sx, double sy, uint32_t time);
 static void quit(const Arg *arg);
+static void readyxw(struct wl_listener *listener, void *data);
 static void render(struct wlr_surface *surface, int sx, int sy, void *data);
 static void renderclients(Monitor *m, struct timespec *now);
 static void rendermon(struct wl_listener *listener, void *data);
@@ -191,6 +193,7 @@ static void setlayout(const Arg *arg);
 static void setmfact(const Arg *arg);
 static void setmon(Client *c, Monitor *m, unsigned int newtags);
 static void setup(void);
+static void setupxw(void);
 static void spawn(const Arg *arg);
 static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
@@ -240,13 +243,11 @@ static struct wl_listener new_input = {.notify = inputdevice};
 static struct wl_listener new_output = {.notify = createmon};
 static struct wl_listener new_xdeco = {.notify = createxdeco};
 static struct wl_listener new_xdg_surface = {.notify = createnotify};
+static struct wl_listener new_xwayland_surface = {.notify = createnotifyxw};
 static struct wl_listener request_cursor = {.notify = setcursor};
 static struct wl_listener request_set_psel = {.notify = setpsel};
 static struct wl_listener request_set_sel = {.notify = setsel};
-
-/* xwayland handlers */
-static struct wl_listener xwayland_surface;
-static struct wl_listener xwayland_ready;
+static struct wl_listener xwayland_ready = {.notify = readyxw};
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
@@ -492,6 +493,28 @@ createnotify(struct wl_listener *listener, void *data)
 	wl_signal_add(&xdg_surface->events.unmap, &c->unmap);
 	c->destroy.notify = destroynotify;
 	wl_signal_add(&xdg_surface->events.destroy, &c->destroy);
+}
+
+void
+createnotifyxw(struct wl_listener *listener, void *data)
+{
+	struct wlr_xwayland_surface *xwayland_surface = data;
+	Client *c;
+
+	fprintf(stderr, "AMC createnotifyxw title=%s role=%s class=%s\n", xwayland_surface->title, xwayland_surface->role, xwayland_surface->class);
+
+	/* Allocate a Client for this surface */
+	c = xwayland_surface->data = calloc(1, sizeof(*c));
+	c->xwayland_surface = xwayland_surface;
+	c->bw = borderpx;
+
+	/* Listen to the various events it can emit */
+	c->map.notify = maprequestxw;
+	wl_signal_add(&xwayland_surface->events.map, &c->map);
+	/* c->unmap.notify = unmapnotify; */
+	/* wl_signal_add(&xdg_surface->events.unmap, &c->unmap); */
+	/* c->destroy.notify = destroynotify; */
+	/* wl_signal_add(&xdg_surface->events.destroy, &c->destroy); */
 }
 
 void
@@ -797,6 +820,20 @@ maprequest(struct wl_listener *listener, void *data)
 
 	/* Set initial monitor, tags, floating status, and focus */
 	applyrules(c);
+}
+
+void
+maprequestxw(struct wl_listener *listener, void *data)
+{
+	/* Called when the surface is mapped, or ready to display on-screen. */
+	Client *c = wl_container_of(listener, c, map);
+
+	fprintf(stderr, "AMC maprequestxw title=%s class=%s\n", c->xwayland_surface->title, c->xwayland_surface->class);
+
+	/* Insert this client into client lists. */
+	wl_list_insert(&clients, &c->link);
+	wl_list_insert(&fstack, &c->flink);
+	wl_list_insert(&stack, &c->slink);
 }
 
 void
@@ -1401,14 +1438,12 @@ static const char *atom_map[ATOM_LAST] = {
 
 xcb_atom_t atoms[ATOM_LAST];
 
-static void
-handle_xwayland_ready(struct wl_listener *listener, void *data)
+void
+readyxw(struct wl_listener *listener, void *data)
 {
 	xcb_connection_t *xcb_conn;
 	int err;
 	size_t i;
-
-	fprintf(stderr, "handle_xwayland_ready\n");
 
 	xcb_conn = xcb_connect(NULL, NULL);
 	err = xcb_connection_has_error(xcb_conn);
@@ -1440,254 +1475,14 @@ handle_xwayland_ready(struct wl_listener *listener, void *data)
 	xcb_disconnect(xcb_conn);
 }
 
-struct sway_xwayland_unmanaged {
-	struct wlr_xwayland_surface *wlr_xwayland_surface;
-	struct wl_list link;
-
-	int lx, ly;
-
-	struct wl_listener request_configure;
-	struct wl_listener request_fullscreen;
-	struct wl_listener commit;
-	struct wl_listener map;
-	struct wl_listener unmap;
-	struct wl_listener destroy;
-};
-
-static void
-unmanaged_handle_request_configure(struct wl_listener *listener, void *data) {
-	struct sway_xwayland_unmanaged *surface = wl_container_of(listener, surface, request_configure);
-	struct wlr_xwayland_surface *xsurface = surface->wlr_xwayland_surface;
-	struct wlr_xwayland_surface_configure_event *ev = data;
-
-	wlr_xwayland_surface_configure(xsurface, ev->x, ev->y, ev->width, ev->height);
-}
-
-static void
-unmanaged_handle_commit(struct wl_listener *listener, void *data) {
-	struct sway_xwayland_unmanaged *surface = wl_container_of(listener, surface, commit);
-	struct wlr_xwayland_surface *xsurface = surface->wlr_xwayland_surface;
-
-	if (xsurface->x != surface->lx || xsurface->y != surface->ly) {
-		// Surface has moved
-		/* AMC todo: handle damage */
-		/* desktop_damage_surface(xsurface->surface, surface->lx, surface->ly, true); */
-		surface->lx = xsurface->x;
-		surface->ly = xsurface->y;
-		/* AMC todo: handle damage */
-		/* desktop_damage_surface(xsurface->surface, surface->lx, surface->ly, true); */
-	} else {
-		/* AMC todo: handle damage */
-		/* desktop_damage_surface(xsurface->surface, xsurface->x, xsurface->y, false); */
-	}
-}
-
-/* AMC todo: integrate this with focusclient */
 void
-seat_set_focus_surface(struct wlr_surface *surface/* , bool unfocus */) {
-	/* if (seat->has_focus && unfocus) {
-		struct sway_node *focus = seat_get_focus(seat);
-		seat_send_unfocus(focus, seat);
-		seat->has_focus = false;
-	}
-	seat_keyboard_notify_enter(seat, surface);
-	seat_tablet_pads_notify_enter(seat, surface); */
-
-	struct wlr_keyboard *kb;
-
-	if (!surface) {
-		wlr_seat_keyboard_notify_clear_focus(seat);
-	} else /*if (surface != psurface)*/ {
-		kb = wlr_seat_get_keyboard(seat);
-		wlr_seat_keyboard_notify_enter(seat, surface, kb->keycodes, kb->num_keycodes, &kb->modifiers);
-	}
-}
-
-static void
-unmanaged_handle_map(struct wl_listener *listener, void *data) {
-	struct sway_xwayland_unmanaged *surface = wl_container_of(listener, surface, map);
-	struct wlr_xwayland_surface *xsurface = surface->wlr_xwayland_surface;
-
-	/* AMC todo: add a similar data structure */
-	/* wl_list_insert(root->xwayland_unmanaged.prev, &surface->link); */
-
-	wl_signal_add(&xsurface->surface->events.commit, &surface->commit);
-	surface->commit.notify = unmanaged_handle_commit;
-
-	surface->lx = xsurface->x;
-	surface->ly = xsurface->y;
-	/* AMC todo: handle damage */
-	/* desktop_damage_surface(xsurface->surface, surface->lx, surface->ly, true); */
-
-	if (wlr_xwayland_or_surface_wants_focus(xsurface)) {
-		wlr_xwayland_set_seat(xwayland, seat);
-		seat_set_focus_surface(xsurface->surface);
-	}
-}
-
-static void
-unmanaged_handle_unmap(struct wl_listener *listener, void *data) {
-	struct sway_xwayland_unmanaged *surface = wl_container_of(listener, surface, unmap);
-	struct wlr_xwayland_surface *xsurface = surface->wlr_xwayland_surface;
-	/* AMC todo: handle damage */
-	/* desktop_damage_surface(xsurface->surface, xsurface->x, xsurface->y, true); */
-	wl_list_remove(&surface->link);
-	wl_list_remove(&surface->commit.link);
-
-	if (seat->keyboard_state.focused_surface == xsurface->surface) {
-/*
-		// Try to find another unmanaged surface from the same process to pass
-		// focus to. This is necessary because some applications (e.g. Jetbrains
-		// IDEs) represent their multi-level menus as unmanaged surfaces, and
-		// when closing a submenu, the main menu should get input focus.
-		struct sway_xwayland_unmanaged *current;
-		wl_list_for_each(current, &root->xwayland_unmanaged, link) {
-			struct wlr_xwayland_surface *prev_xsurface =
-				current->wlr_xwayland_surface;
-			if (prev_xsurface->pid == xsurface->pid &&
-					wlr_xwayland_or_surface_wants_focus(prev_xsurface)) {
-				seat_set_focus_surface(seat, prev_xsurface->surface, false);
-				return;
-			}
-		}
- */
-		/* // Restore focus
-		struct sway_node *previous = seat_get_focus_inactive(seat, &root->node);
-		if (previous) {
-			// Hack to get seat to re-focus the return value of get_focus
-			seat_set_focus(seat, NULL);
-			seat_set_focus(seat, previous);
-		} */
-	}
-}
-
-static void
-unmanaged_handle_destroy(struct wl_listener *listener, void *data) {
-	struct sway_xwayland_unmanaged *surface = wl_container_of(listener, surface, destroy);
-	wl_list_remove(&surface->map.link);
-	wl_list_remove(&surface->unmap.link);
-	wl_list_remove(&surface->destroy.link);
-	free(surface);
-}
-
-static struct sway_xwayland_unmanaged *
-create_unmanaged(struct wlr_xwayland_surface *xsurface) {
-	struct sway_xwayland_unmanaged *surface;
-
-	surface = calloc(1, sizeof(struct sway_xwayland_unmanaged));
-	if (surface == NULL) {
-		/* AMC todo: handle or squish */
-		wlr_log(WLR_ERROR, "Allocation failed");
-		return NULL;
-	}
-
-	surface->wlr_xwayland_surface = xsurface;
-
-	wl_signal_add(&xsurface->events.request_configure, &surface->request_configure);
-	surface->request_configure.notify = unmanaged_handle_request_configure;
-
-	wl_signal_add(&xsurface->events.map, &surface->map);
-	surface->map.notify = unmanaged_handle_map;
-
-	wl_signal_add(&xsurface->events.unmap, &surface->unmap);
-	surface->unmap.notify = unmanaged_handle_unmap;
-
-	wl_signal_add(&xsurface->events.destroy, &surface->destroy);
-	surface->destroy.notify = unmanaged_handle_destroy;
-
-	return surface;
-}
-
-static void
-handle_xwayland_surface(struct wl_listener *listener, void *data)
-{
-	struct wlr_xwayland_surface *xsurface = data;
-	Client *c;
-
-	fprintf(stderr, "handle_xwayland_surface\n");
-
-	if (xsurface->override_redirect) {
-		wlr_log(WLR_DEBUG, "New xwayland unmanaged surface");
-		create_unmanaged(xsurface);
-		return;
-	}
-
-	wlr_log(WLR_DEBUG, "New xwayland surface title='%s' class='%s'",
-		xsurface->title, xsurface->class);
-
-	/* xwayland_view = calloc(1, sizeof(struct sway_xwayland_view));
-
-	struct sway_xwayland_view *xwayland_view =
-		calloc(1, sizeof(struct sway_xwayland_view));
-	if (!sway_assert(xwayland_view, "Failed to allocate view")) {
-		return;
-	}
-
-	view_init(&xwayland_view->view, SWAY_VIEW_XWAYLAND, &view_impl);
-	xwayland_view->view.wlr_xwayland_surface = xsurface; */
-
-	/* AMC todo: make this happen in createnotify */
-	c = xsurface->data = calloc(1, sizeof(*c));
-	c->xwayland_surface = xsurface;
-	c->bw = borderpx;
-
-	/* Tell the client not to try anything fancy */
-	wlr_xdg_toplevel_set_tiled(c->xdg_surface, WLR_EDGE_TOP |
-			WLR_EDGE_BOTTOM | WLR_EDGE_LEFT | WLR_EDGE_RIGHT);
-
-	/* wl_signal_add(&xsurface->events.destroy, &xwayland_view->destroy); */
-	/* xwayland_view->destroy.notify = handle_destroy; */
-
-	/* wl_signal_add(&xsurface->events.request_configure, &xwayland_view->request_configure); */
-	/* xwayland_view->request_configure.notify = handle_request_configure; */
-
-	/* wl_signal_add(&xsurface->events.request_fullscreen, &xwayland_view->request_fullscreen); */
-	/* xwayland_view->request_fullscreen.notify = handle_request_fullscreen; */
-
-	/* wl_signal_add(&xsurface->events.request_activate, &xwayland_view->request_activate); */
-	/* xwayland_view->request_activate.notify = handle_request_activate; */
-
-	/* wl_signal_add(&xsurface->events.request_move, &xwayland_view->request_move); */
-	/* xwayland_view->request_move.notify = handle_request_move; */
-
-	/* wl_signal_add(&xsurface->events.request_resize, &xwayland_view->request_resize); */
-	/* xwayland_view->request_resize.notify = handle_request_resize; */
-
-	/* wl_signal_add(&xsurface->events.set_title, &xwayland_view->set_title); */
-	/* xwayland_view->set_title.notify = handle_set_title; */
-
-	/* wl_signal_add(&xsurface->events.set_class, &xwayland_view->set_class); */
-	/* xwayland_view->set_class.notify = handle_set_class; */
-
-	/* wl_signal_add(&xsurface->events.set_role, &xwayland_view->set_role); */
-	/* xwayland_view->set_role.notify = handle_set_role; */
-
-	/* wl_signal_add(&xsurface->events.set_window_type, &xwayland_view->set_window_type); */
-	/* xwayland_view->set_window_type.notify = handle_set_window_type; */
-
-	/* wl_signal_add(&xsurface->events.set_hints, &xwayland_view->set_hints); */
-	/* xwayland_view->set_hints.notify = handle_set_hints; */
-
-	/* wl_signal_add(&xsurface->events.set_decorations, &xwayland_view->set_decorations); */
-	/* xwayland_view->set_decorations.notify = handle_set_decorations; */
-
-	/* wl_signal_add(&xsurface->events.unmap, &xwayland_view->unmap); */
-	/* xwayland_view->unmap.notify = handle_unmap; */
-
-	/* wl_signal_add(&xsurface->events.map, &xwayland_view->map); */
-	/* xwayland_view->map.notify = handle_map; */
-}
-
-void
-setupxwayland()
+setupxw()
 {
 	/* AMC todo: document and move into setup */
 	xwayland = wlr_xwayland_create(dpy, compositor, false);
 	if (xwayland) {
 		wl_signal_add(&xwayland->events.ready, &xwayland_ready);
-		xwayland_ready.notify = handle_xwayland_ready;
-		wl_signal_add(&xwayland->events.new_surface, &xwayland_surface);
-		xwayland_surface.notify = handle_xwayland_surface;
+		wl_signal_add(&xwayland->events.new_surface, &new_xwayland_surface);
 
 		setenv("DISPLAY", xwayland->display_name, true);
 	} else {
@@ -1880,7 +1675,7 @@ main(int argc, char *argv[])
 	dpy = wl_display_create();
 
 	setup();
-	setupxwayland();
+	setupxw();
 	run(startup_cmd);
 
 	/* Once wl_display_run returns, we shut down the server. */
