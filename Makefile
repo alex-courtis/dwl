@@ -29,7 +29,8 @@ dwl.o: config.h xdg-shell-protocol.h
 
 dwl: xdg-shell-protocol.o
 
-copy: dwl
+dev: dwl ctags
+	ssh duke rm /home/alex/dwl
 	scp dwl dwl.c duke:/home/alex
 
 clean:

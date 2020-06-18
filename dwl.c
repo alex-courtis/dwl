@@ -280,10 +280,14 @@ applyrules(Client *c)
 
 	/* rule matching */
 	c->isfloating = 0;
-	if (!(appid = c->xdg_surface->toplevel->app_id))
-		appid = broken;
-	if (!(title = c->xdg_surface->toplevel->title))
-		title = broken;
+	if (c->xdg_surface) {
+		if (!(appid = c->xdg_surface->toplevel->app_id))
+			appid = broken;
+		if (!(title = c->xdg_surface->toplevel->title))
+			title = broken;
+	} else {
+		fprintf(stderr, "AMC TODO implement xwayland for applyrules\n");
+	}
 
 	for (r = rules; r < END(rules); r++) {
 		if ((!r->title || strstr(title, r->title))
@@ -605,8 +609,12 @@ focusclient(Client *c, struct wlr_surface *surface, int lift)
 	if (c) {
 		/* assert(VISIBLEON(c, c->mon)); ? */
 		/* Use top-level wlr_surface if nothing more specific given */
-		if (!surface)
-			surface = c->xdg_surface->surface;
+		if (!surface) {
+			if (c->xdg_surface)
+				surface = c->xdg_surface->surface;
+			else
+				surface = c->xwayland_surface->surface;
+		}
 
 		/* Focus the correct monitor (must come after selclient!) */
 		selmon = c->mon;
@@ -620,6 +628,11 @@ focusclient(Client *c, struct wlr_surface *surface, int lift)
 			wl_list_remove(&c->slink);
 			wl_list_insert(&stack, &c->slink);
 		}
+	}
+
+	if (!c->xdg_surface) {
+		fprintf(stderr, "AMC TODO implement xwayland for focusclient\n");
+		return;
 	}
 
 	/*
@@ -834,6 +847,9 @@ maprequestxw(struct wl_listener *listener, void *data)
 	wl_list_insert(&clients, &c->link);
 	wl_list_insert(&fstack, &c->flink);
 	wl_list_insert(&stack, &c->slink);
+
+	/* Set initial monitor, tags, floating status, and focus */
+	applyrules(c);
 }
 
 void
@@ -1041,8 +1057,13 @@ renderclients(Monitor *m, struct timespec *now)
 		ox = c->geom.x, oy = c->geom.y;
 		wlr_output_layout_output_coords(output_layout, m->wlr_output,
 				&ox, &oy);
-		w = c->xdg_surface->surface->current.width;
-		h = c->xdg_surface->surface->current.height;
+		if (c->xdg_surface) {
+			w = c->xdg_surface->surface->current.width;
+			h = c->xdg_surface->surface->current.height;
+		} else {
+			w = c->xwayland_surface->surface->current.width;
+			h = c->xwayland_surface->surface->current.height;
+		}
 		borders = (struct wlr_box[4]) {
 			{ox, oy, w + 2 * c->bw, c->bw},             /* top */
 			{ox, oy + c->bw, c->bw, h},                 /* left */
@@ -1053,6 +1074,11 @@ renderclients(Monitor *m, struct timespec *now)
 			scalebox(&borders[i], m->wlr_output->scale);
 			wlr_render_rect(drw, &borders[i], bordercolor,
 					m->wlr_output->transform_matrix);
+		}
+
+		if (!c->xdg_surface) {
+			/* AMC TODO implement XWayland for renderclients */
+			return;
 		}
 
 		/* This calls our render function for each surface among the
@@ -1108,14 +1134,21 @@ resize(Client *c, int x, int y, int w, int h, int interact)
 	 * the new size, then commit any movement that was prepared.
 	 */
 	struct wlr_box *bbox = interact ? &sgeom : &c->mon->w;
+
+	fprintf(stderr, "AMC resize\n");
+
 	c->geom.x = x;
 	c->geom.y = y;
 	c->geom.width = w;
 	c->geom.height = h;
 	applybounds(c, bbox);
 	/* wlroots makes this a no-op if size hasn't changed */
-	wlr_xdg_toplevel_set_size(c->xdg_surface,
-			c->geom.width - 2 * c->bw, c->geom.height - 2 * c->bw);
+	if (c->xdg_surface) {
+		wlr_xdg_toplevel_set_size(c->xdg_surface,
+				c->geom.width - 2 * c->bw, c->geom.height - 2 * c->bw);
+	} else {
+		fprintf(stderr, "AMC TODO implement XWayland for resize\n");
+	}
 }
 
 void
@@ -1271,10 +1304,14 @@ setmon(Client *c, Monitor *m, unsigned int newtags)
 	if (m) {
 		/* Make sure window actually overlaps with the monitor */
 		applybounds(c, &m->m);
-		wlr_surface_send_enter(c->xdg_surface->surface, m->wlr_output);
+		if (c->xdg_surface)
+			wlr_surface_send_enter(c->xdg_surface->surface, m->wlr_output);
+		else
+			wlr_surface_send_enter(c->xwayland_surface->surface, m->wlr_output);
 		c->tags = newtags ? newtags : m->tagset[m->seltags]; /* assign tags of target monitor */
 		arrange(m);
 	}
+	fprintf(stderr, "AMC setmon\n");
 	/* Focus can change if c is the top of selmon before or after */
 	if (hadfocus || c == selclient())
 		focusclient(lastfocused(), NULL, 1);
@@ -1448,7 +1485,7 @@ readyxw(struct wl_listener *listener, void *data)
 	xcb_conn = xcb_connect(NULL, NULL);
 	err = xcb_connection_has_error(xcb_conn);
 	if (err) {
-		/* AMC todo: handle or squish */
+		/* AMC TODO handle or squish */
 		wlr_log(WLR_ERROR, "XCB connect failed: %d", err);
 		return;
 	}
@@ -1464,7 +1501,7 @@ readyxw(struct wl_listener *listener, void *data)
 		free(reply);
 
 		if (error != NULL) {
-			/* AMC todo: handle or squish */
+			/* AMC TODO handle or squish */
 			wlr_log(WLR_ERROR, "could not resolve atom %s, X11 error code %d",
 					atom_map[i], error->error_code);
 			free(error);
@@ -1478,7 +1515,7 @@ readyxw(struct wl_listener *listener, void *data)
 void
 setupxw()
 {
-	/* AMC todo: document and move into setup */
+	/* AMC TODO document and move into setup */
 	xwayland = wlr_xwayland_create(dpy, compositor, false);
 	if (xwayland) {
 		wl_signal_add(&xwayland->events.ready, &xwayland_ready);
@@ -1527,6 +1564,8 @@ tile(Monitor *m)
 {
 	unsigned int i, n = 0, h, mw, my, ty;
 	Client *c;
+
+	fprintf(stderr, "AMC tile\n");
 
 	wl_list_for_each(c, &clients, link)
 		if (VISIBLEON(c, m) && !c->isfloating)
