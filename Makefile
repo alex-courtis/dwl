@@ -30,13 +30,12 @@ dwl.o: config.h xdg-shell-protocol.h
 dwl: xdg-shell-protocol.o
 
 dev: dwl ctags
-	ssh duke rm /home/alex/dwl
-	scp dwl dwl.c duke:/home/alex
+	ssh duke rm -f /home/alex/src/dwl/dwl ; scp * duke:/home/alex/src/dwl
 
 clean:
 	rm -f dwl *.o xdg-shell-protocol.h xdg-shell-protocol.c
 
-ctags:
+ctags: dwl
 	ctags-c xdg-shell-protocol.c xdg-shell-protocol.h dwl.c $(CFLAGS)
 
 .DEFAULT_GOAL=dwl

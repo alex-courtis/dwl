@@ -65,8 +65,10 @@ typedef struct {
 	struct wl_list link;
 	struct wl_list flink;
 	struct wl_list slink;
-	struct wlr_xdg_surface *xdg_surface;
-	struct wlr_xwayland_surface *xwayland_surface;
+	union {
+		struct wlr_xdg_surface *xdg_surface;
+		struct wlr_xwayland_surface *xwayland_surface;
+	};
 	struct wl_listener map;
 	struct wl_listener unmap;
 	struct wl_listener destroy;
@@ -75,6 +77,7 @@ typedef struct {
 	int bw;
 	unsigned int tags;
 	int isfloating;
+	int isxdg;
 } Client;
 
 typedef struct {
@@ -280,7 +283,7 @@ applyrules(Client *c)
 
 	/* rule matching */
 	c->isfloating = 0;
-	if (c->xdg_surface) {
+	if (c->isxdg) {
 		if (!(appid = c->xdg_surface->toplevel->app_id))
 			appid = broken;
 		if (!(title = c->xdg_surface->toplevel->title))
@@ -341,10 +344,14 @@ buttonpress(struct wl_listener *listener, void *data)
 	case WLR_BUTTON_PRESSED:;
 		/* Change focus if the button was _pressed_ over a client */
 		if ((c = xytoclient(cursor->x, cursor->y))) {
-			surface = wlr_xdg_surface_surface_at(c->xdg_surface,
-					cursor->x - c->geom.x - c->bw,
-					cursor->y - c->geom.y - c->bw, NULL, NULL);
-			focusclient(c, surface, 1);
+			if (c->isxdg) {
+				surface = wlr_xdg_surface_surface_at(c->xdg_surface,
+						cursor->x - c->geom.x - c->bw,
+						cursor->y - c->geom.y - c->bw, NULL, NULL);
+				focusclient(c, surface, 1);
+			} else {
+				fprintf(stderr, "AMC TODO implement XWayland for buttonpress\n");
+			}
 		}
 
 		keyboard = wlr_seat_get_keyboard(seat);
@@ -484,6 +491,7 @@ createnotify(struct wl_listener *listener, void *data)
 	/* Allocate a Client for this surface */
 	c = xdg_surface->data = calloc(1, sizeof(*c));
 	c->xdg_surface = xdg_surface;
+	c->isxdg = 1;
 	c->bw = borderpx;
 
 	/* Tell the client not to try anything fancy */
@@ -510,6 +518,7 @@ createnotifyxw(struct wl_listener *listener, void *data)
 	/* Allocate a Client for this surface */
 	c = xwayland_surface->data = calloc(1, sizeof(*c));
 	c->xwayland_surface = xwayland_surface;
+	c->isxdg = 0;
 	c->bw = borderpx;
 
 	/* Listen to the various events it can emit */
@@ -601,10 +610,18 @@ focusclient(Client *c, struct wlr_surface *surface, int lift)
 	Client *sel = selclient();
 	struct wlr_keyboard *kb;
 	/* Previous and new xdg toplevel surfaces */
-	struct wlr_xdg_surface *ptl = sel ? sel->xdg_surface : NULL;
-	struct wlr_xdg_surface *tl = c ? c->xdg_surface : NULL;
+	struct wlr_xdg_surface *ptl;
+	struct wlr_xdg_surface *tl;
 	/* Previously focused surface */
 	struct wlr_surface *psurface = seat->keyboard_state.focused_surface;
+
+	if (c->isxdg) {
+		ptl = sel ? sel->xdg_surface : NULL;
+		tl = c ? c->xdg_surface : NULL;
+	} else {
+		fprintf(stderr, "AMC TODO implement xwayland for focusclient\n");
+		return;
+	}
 
 	if (c) {
 		/* assert(VISIBLEON(c, c->mon)); ? */
@@ -628,11 +645,6 @@ focusclient(Client *c, struct wlr_surface *surface, int lift)
 			wl_list_remove(&c->slink);
 			wl_list_insert(&stack, &c->slink);
 		}
-	}
-
-	if (!c->xdg_surface) {
-		fprintf(stderr, "AMC TODO implement xwayland for focusclient\n");
-		return;
 	}
 
 	/*
@@ -891,10 +903,15 @@ motionnotify(uint32_t time)
 	}
 
 	/* Otherwise, find the client under the pointer and send the event along. */
-	if ((c = xytoclient(cursor->x, cursor->y)))
-		surface = wlr_xdg_surface_surface_at(c->xdg_surface,
-				cursor->x - c->geom.x - c->bw,
-				cursor->y - c->geom.y - c->bw, &sx, &sy);
+	if ((c = xytoclient(cursor->x, cursor->y))) {
+		if (c->isxdg) {
+			surface = wlr_xdg_surface_surface_at(c->xdg_surface,
+					cursor->x - c->geom.x - c->bw,
+					cursor->y - c->geom.y - c->bw, &sx, &sy);
+		} else {
+			/* AMC TODO implement xwayland for motionnotify */
+		}
+	}
 	/* If there's no client surface under the cursor, set the cursor image to a
 	 * default. This is what makes the cursor image appear when you move it
 	 * off of a client or over its border. */
@@ -953,8 +970,13 @@ pointerfocus(Client *c, struct wlr_surface *surface, double sx, double sy,
 		uint32_t time)
 {
 	/* Use top level surface if nothing more specific given */
-	if (c && !surface)
-		surface = c->xdg_surface->surface;
+	if (c && !surface) {
+		if (c->isxdg) {
+			surface = c->xdg_surface->surface;
+		} else {
+			/* AMC TODO implement xwayland for pointerfocus */
+		}
+	}
 	/* If surface is already focused, only notify of motion */
 	if (surface && surface == seat->pointer_state.focused_surface) {
 		wlr_seat_pointer_notify_motion(seat, time, sx, sy);
@@ -1057,7 +1079,7 @@ renderclients(Monitor *m, struct timespec *now)
 		ox = c->geom.x, oy = c->geom.y;
 		wlr_output_layout_output_coords(output_layout, m->wlr_output,
 				&ox, &oy);
-		if (c->xdg_surface) {
+		if (c->isxdg) {
 			w = c->xdg_surface->surface->current.width;
 			h = c->xdg_surface->surface->current.height;
 		} else {
@@ -1076,7 +1098,7 @@ renderclients(Monitor *m, struct timespec *now)
 					m->wlr_output->transform_matrix);
 		}
 
-		if (!c->xdg_surface) {
+		if (!c->isxdg) {
 			/* AMC TODO implement XWayland for renderclients */
 			return;
 		}
@@ -1143,7 +1165,7 @@ resize(Client *c, int x, int y, int w, int h, int interact)
 	c->geom.height = h;
 	applybounds(c, bbox);
 	/* wlroots makes this a no-op if size hasn't changed */
-	if (c->xdg_surface) {
+	if (c->isxdg) {
 		wlr_xdg_toplevel_set_size(c->xdg_surface,
 				c->geom.width - 2 * c->bw, c->geom.height - 2 * c->bw);
 	} else {
@@ -1298,20 +1320,22 @@ setmon(Client *c, Monitor *m, unsigned int newtags)
 	c->mon = m;
 	/* XXX leave/enter is not optimal but works */
 	if (oldmon) {
-		wlr_surface_send_leave(c->xdg_surface->surface, oldmon->wlr_output);
+		if (c->isxdg)
+			wlr_surface_send_leave(c->xdg_surface->surface, oldmon->wlr_output);
+		else
+			wlr_surface_send_leave(c->xwayland_surface->surface, oldmon->wlr_output);
 		arrange(oldmon);
 	}
 	if (m) {
 		/* Make sure window actually overlaps with the monitor */
 		applybounds(c, &m->m);
-		if (c->xdg_surface)
+		if (c->isxdg)
 			wlr_surface_send_enter(c->xdg_surface->surface, m->wlr_output);
 		else
 			wlr_surface_send_enter(c->xwayland_surface->surface, m->wlr_output);
 		c->tags = newtags ? newtags : m->tagset[m->seltags]; /* assign tags of target monitor */
 		arrange(m);
 	}
-	fprintf(stderr, "AMC setmon\n");
 	/* Focus can change if c is the top of selmon before or after */
 	if (hadfocus || c == selclient())
 		focusclient(lastfocused(), NULL, 1);
