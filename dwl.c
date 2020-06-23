@@ -213,8 +213,9 @@ static struct wl_display *dpy;
 static struct wlr_backend *backend;
 static struct wlr_renderer *drw;
 static struct wlr_compositor *compositor;
-static struct wlr_xdg_shell *xdg_shell;
 static struct wlr_xwayland *xwayland;
+
+static struct wlr_xdg_shell *xdg_shell;
 static struct wl_list clients; /* tiling order */
 static struct wl_list fstack;  /* focus order */
 static struct wl_list stack;   /* stacking z-order */
@@ -1082,9 +1083,9 @@ renderclients(Monitor *m, struct timespec *now)
 
 		/* This calls our render function for each surface among the
 		 * xdg_surface's toplevel and popups. */
-		rdata.output = m->wlr_output;
-		rdata.when = now;
-		rdata.x = c->geom.x + c->bw;
+		rdata.output = m->wlr_output,
+		rdata.when = now,
+		rdata.x = c->geom.x + c->bw,
 		rdata.y = c->geom.y + c->bw;
 		if (c->isxdg)
 			wlr_xdg_surface_for_each_surface(c->xdg_surface, render, &rdata);
@@ -1136,7 +1137,6 @@ resize(Client *c, int x, int y, int w, int h, int interact)
 	 * the new size, then commit any movement that was prepared.
 	 */
 	struct wlr_box *bbox = interact ? &sgeom : &c->mon->w;
-
 	c->geom.x = x;
 	c->geom.y = y;
 	c->geom.width = w;
