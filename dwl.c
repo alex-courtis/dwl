@@ -172,7 +172,6 @@ static void keypress(struct wl_listener *listener, void *data);
 static void keypressmod(struct wl_listener *listener, void *data);
 static Client *lastfocused(void);
 static void maprequest(struct wl_listener *listener, void *data);
-static void maprequestxw(struct wl_listener *listener, void *data);
 static void motionabsolute(struct wl_listener *listener, void *data);
 static void motionnotify(uint32_t time);
 static void motionrelative(struct wl_listener *listener, void *data);
@@ -513,8 +512,6 @@ createnotifyxw(struct wl_listener *listener, void *data)
 	struct wlr_xwayland_surface *xwayland_surface = data;
 	Client *c;
 
-	fprintf(stderr, "AMC createnotifyxw title=%s role=%s class=%s\n", xwayland_surface->title, xwayland_surface->role, xwayland_surface->class);
-
 	/* Allocate a Client for this surface */
 	c = xwayland_surface->data = calloc(1, sizeof(*c));
 	c->xwayland_surface = xwayland_surface;
@@ -522,7 +519,7 @@ createnotifyxw(struct wl_listener *listener, void *data)
 	c->bw = borderpx;
 
 	/* Listen to the various events it can emit */
-	c->map.notify = maprequestxw;
+	c->map.notify = maprequest;
 	wl_signal_add(&xwayland_surface->events.map, &c->map);
 	/* c->unmap.notify = unmapnotify; */
 	/* wl_signal_add(&xdg_surface->events.unmap, &c->unmap); */
@@ -839,26 +836,17 @@ maprequest(struct wl_listener *listener, void *data)
 	wl_list_insert(&clients, &c->link);
 	wl_list_insert(&fstack, &c->flink);
 	wl_list_insert(&stack, &c->slink);
-	wlr_xdg_surface_get_geometry(c->xdg_surface, &c->geom);
-	c->geom.width += 2 * c->bw;
-	c->geom.height += 2 * c->bw;
 
-	/* Set initial monitor, tags, floating status, and focus */
-	applyrules(c);
-}
-
-void
-maprequestxw(struct wl_listener *listener, void *data)
-{
-	/* Called when the surface is mapped, or ready to display on-screen. */
-	Client *c = wl_container_of(listener, c, map);
-
-	fprintf(stderr, "AMC maprequestxw title=%s class=%s\n", c->xwayland_surface->title, c->xwayland_surface->class);
-
-	/* Insert this client into client lists. */
-	wl_list_insert(&clients, &c->link);
-	wl_list_insert(&fstack, &c->flink);
-	wl_list_insert(&stack, &c->slink);
+	if (c->isxdg) {
+		wlr_xdg_surface_get_geometry(c->xdg_surface, &c->geom);
+		c->geom.width += 2 * c->bw;
+		c->geom.height += 2 * c->bw;
+	} else {
+		c->geom.x = c->xwayland_surface->x;
+		c->geom.y = c->xwayland_surface->y;
+		c->geom.width = c->xwayland_surface->width + 2 * c->bw;
+		c->geom.height = c->xwayland_surface->height + 2 * c->bw;
+	}
 
 	/* Set initial monitor, tags, floating status, and focus */
 	applyrules(c);
@@ -1098,18 +1086,16 @@ renderclients(Monitor *m, struct timespec *now)
 					m->wlr_output->transform_matrix);
 		}
 
-		if (!c->isxdg) {
-			/* AMC TODO implement XWayland for renderclients */
-			return;
-		}
-
 		/* This calls our render function for each surface among the
 		 * xdg_surface's toplevel and popups. */
-		rdata.output = m->wlr_output,
-		rdata.when = now,
-		rdata.x = c->geom.x + c->bw,
-		rdata.y = c->geom.y + c->bw,
-		wlr_xdg_surface_for_each_surface(c->xdg_surface, render, &rdata);
+		rdata.output = m->wlr_output;
+		rdata.when = now;
+		rdata.x = c->geom.x + c->bw;
+		rdata.y = c->geom.y + c->bw;
+		if (c->isxdg)
+			wlr_surface_for_each_surface(c->xdg_surface->surface, render, &rdata);
+		else
+			wlr_surface_for_each_surface(c->xwayland_surface->surface, render, &rdata);
 	}
 }
 
@@ -1157,8 +1143,6 @@ resize(Client *c, int x, int y, int w, int h, int interact)
 	 */
 	struct wlr_box *bbox = interact ? &sgeom : &c->mon->w;
 
-	fprintf(stderr, "AMC resize\n");
-
 	c->geom.x = x;
 	c->geom.y = y;
 	c->geom.width = w;
@@ -1169,7 +1153,9 @@ resize(Client *c, int x, int y, int w, int h, int interact)
 		wlr_xdg_toplevel_set_size(c->xdg_surface,
 				c->geom.width - 2 * c->bw, c->geom.height - 2 * c->bw);
 	} else {
-		fprintf(stderr, "AMC TODO implement XWayland for resize\n");
+		wlr_xwayland_surface_configure(c->xwayland_surface,
+				c->geom.x, c->geom.y,
+				c->geom.width - 2 * c->bw, c->geom.height - 2 * c->bw);
 	}
 }
 
