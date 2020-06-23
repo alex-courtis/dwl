@@ -180,7 +180,6 @@ static void moveresize(const Arg *arg);
 static void pointerfocus(Client *c, struct wlr_surface *surface,
 		double sx, double sy, uint32_t time);
 static void quit(const Arg *arg);
-static void readyxw(struct wl_listener *listener, void *data);
 static void render(struct wlr_surface *surface, int sx, int sy, void *data);
 static void renderclients(Monitor *m, struct timespec *now);
 static void rendermon(struct wl_listener *listener, void *data);
@@ -196,7 +195,6 @@ static void setlayout(const Arg *arg);
 static void setmfact(const Arg *arg);
 static void setmon(Client *c, Monitor *m, unsigned int newtags);
 static void setup(void);
-static void setupxw(void);
 static void spawn(const Arg *arg);
 static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
@@ -250,7 +248,6 @@ static struct wl_listener new_xwayland_surface = {.notify = createnotifyxwayland
 static struct wl_listener request_cursor = {.notify = setcursor};
 static struct wl_listener request_set_psel = {.notify = setpsel};
 static struct wl_listener request_set_sel = {.notify = setsel};
-static struct wl_listener xwayland_ready = {.notify = readyxw};
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
@@ -345,15 +342,14 @@ buttonpress(struct wl_listener *listener, void *data)
 	case WLR_BUTTON_PRESSED:;
 		/* Change focus if the button was _pressed_ over a client */
 		if ((c = xytoclient(cursor->x, cursor->y))) {
-			if (c->isxdg) {
+			if (c->isxdg)
 				surface = wlr_xdg_surface_surface_at(c->xdg_surface,
 						cursor->x - c->geom.x - c->bw,
 						cursor->y - c->geom.y - c->bw, NULL, NULL);
-			} else {
+			else
 				surface = wlr_surface_surface_at(c->xwayland_surface->surface,
 						cursor->x - c->geom.x - c->bw,
 						cursor->y - c->geom.y - c->bw, NULL, NULL);
-			}
 			focusclient(c, surface, 1);
 		}
 
@@ -611,18 +607,10 @@ focusclient(Client *c, struct wlr_surface *surface, int lift)
 	Client *sel = selclient();
 	struct wlr_keyboard *kb;
 	/* Previous and new xdg toplevel surfaces */
-	struct wlr_xdg_surface *ptl;
-	struct wlr_xdg_surface *tl;
+	Client *ptl = sel;
+	Client *tl = c;
 	/* Previously focused surface */
 	struct wlr_surface *psurface = seat->keyboard_state.focused_surface;
-
-	if (c->isxdg) {
-		ptl = sel ? sel->xdg_surface : NULL;
-		tl = c ? c->xdg_surface : NULL;
-	} else {
-		fprintf(stderr, "AMC TODO implement xwayland for focusclient\n");
-		return;
-	}
 
 	if (c) {
 		/* assert(VISIBLEON(c, c->mon)); ? */
@@ -667,10 +655,18 @@ focusclient(Client *c, struct wlr_surface *surface, int lift)
 	 * activate the new one.  This lets the clients know to repaint
 	 * accordingly, e.g. show/hide a caret.
 	 */
-	if (tl != ptl && ptl)
-		wlr_xdg_toplevel_set_activated(ptl, 0);
-	if (tl != ptl && tl)
-		wlr_xdg_toplevel_set_activated(tl, 1);
+	if (tl != ptl && ptl) {
+		if (ptl->isxdg)
+			wlr_xdg_toplevel_set_activated(ptl->xdg_surface, 0);
+		else
+			wlr_xwayland_surface_activate(ptl->xwayland_surface, 0);
+	}
+	if (tl != ptl && tl) {
+		if (tl->isxdg)
+			wlr_xdg_toplevel_set_activated(tl->xdg_surface, 1);
+		else
+			wlr_xwayland_surface_activate(tl->xwayland_surface, 1);
+	}
 }
 
 void
@@ -896,15 +892,14 @@ motionnotify(uint32_t time)
 
 	/* Otherwise, find the client under the pointer and send the event along. */
 	if ((c = xytoclient(cursor->x, cursor->y))) {
-		if (c->isxdg) {
+		if (c->isxdg)
 			surface = wlr_xdg_surface_surface_at(c->xdg_surface,
 					cursor->x - c->geom.x - c->bw,
 					cursor->y - c->geom.y - c->bw, &sx, &sy);
-		} else {
+		else
 			surface = wlr_surface_surface_at(c->xwayland_surface->surface,
 					cursor->x - c->geom.x - c->bw,
 					cursor->y - c->geom.y - c->bw, &sx, &sy);
-		}
 	}
 	/* If there's no client surface under the cursor, set the cursor image to a
 	 * default. This is what makes the cursor image appear when you move it
@@ -1148,14 +1143,13 @@ resize(Client *c, int x, int y, int w, int h, int interact)
 	c->geom.height = h;
 	applybounds(c, bbox);
 	/* wlroots makes this a no-op if size hasn't changed */
-	if (c->isxdg) {
+	if (c->isxdg)
 		wlr_xdg_toplevel_set_size(c->xdg_surface,
 				c->geom.width - 2 * c->bw, c->geom.height - 2 * c->bw);
-	} else {
+	else
 		wlr_xwayland_surface_configure(c->xwayland_surface,
 				c->geom.x, c->geom.y,
 				c->geom.width - 2 * c->bw, c->geom.height - 2 * c->bw);
-	}
 }
 
 void
@@ -1446,83 +1440,13 @@ setup(void)
 			&request_set_sel);
 	wl_signal_add(&seat->events.request_set_primary_selection,
 			&request_set_psel);
-}
 
-enum atom_name {
-	NET_WM_WINDOW_TYPE_NORMAL,
-	NET_WM_WINDOW_TYPE_DIALOG,
-	NET_WM_WINDOW_TYPE_UTILITY,
-	NET_WM_WINDOW_TYPE_TOOLBAR,
-	NET_WM_WINDOW_TYPE_SPLASH,
-	NET_WM_WINDOW_TYPE_MENU,
-	NET_WM_WINDOW_TYPE_DROPDOWN_MENU,
-	NET_WM_WINDOW_TYPE_POPUP_MENU,
-	NET_WM_WINDOW_TYPE_TOOLTIP,
-	NET_WM_WINDOW_TYPE_NOTIFICATION,
-	NET_WM_STATE_MODAL,
-	ATOM_LAST,
-};
-
-static const char *atom_map[ATOM_LAST] = {
-	"_NET_WM_WINDOW_TYPE_NORMAL",
-	"_NET_WM_WINDOW_TYPE_DIALOG",
-	"_NET_WM_WINDOW_TYPE_UTILITY",
-	"_NET_WM_WINDOW_TYPE_TOOLBAR",
-	"_NET_WM_WINDOW_TYPE_SPLASH",
-	"_NET_WM_WINDOW_TYPE_MENU",
-	"_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
-	"_NET_WM_WINDOW_TYPE_POPUP_MENU",
-	"_NET_WM_WINDOW_TYPE_TOOLTIP",
-	"_NET_WM_WINDOW_TYPE_NOTIFICATION",
-	"_NET_WM_STATE_MODAL",
-};
-
-xcb_atom_t atoms[ATOM_LAST];
-
-void
-readyxw(struct wl_listener *listener, void *data)
-{
-	xcb_connection_t *xcb_conn;
-	int err;
-	size_t i;
-
-	xcb_conn = xcb_connect(NULL, NULL);
-	err = xcb_connection_has_error(xcb_conn);
-	if (err) {
-		/* AMC TODO handle or squish */
-		wlr_log(WLR_ERROR, "XCB connect failed: %d", err);
-		return;
-	}
-
-	for (i = 0; i < ATOM_LAST; i++) {
-		xcb_intern_atom_cookie_t cookie = xcb_intern_atom(xcb_conn, 0, strlen(atom_map[i]), atom_map[i]);
-		xcb_generic_error_t *error = NULL;
-		xcb_intern_atom_reply_t *reply =
-			xcb_intern_atom_reply(xcb_conn, cookie, &error);
-		if (reply != NULL && error == NULL) {
-			atoms[i] = reply->atom;
-		}
-		free(reply);
-
-		if (error != NULL) {
-			/* AMC TODO handle or squish */
-			wlr_log(WLR_ERROR, "could not resolve atom %s, X11 error code %d",
-					atom_map[i], error->error_code);
-			free(error);
-			break;
-		}
-	}
-
-	xcb_disconnect(xcb_conn);
-}
-
-void
-setupxw()
-{
-	/* AMC TODO document and move into setup */
-	xwayland = wlr_xwayland_create(dpy, compositor, false);
+	/*
+	 * Initialise the XWayland X server.
+	 * It will be started when the first X client is started.
+	 */
+	xwayland = wlr_xwayland_create(dpy, compositor, true);
 	if (xwayland) {
-		wl_signal_add(&xwayland->events.ready, &xwayland_ready);
 		wl_signal_add(&xwayland->events.new_surface, &new_xwayland_surface);
 
 		setenv("DISPLAY", xwayland->display_name, true);
@@ -1568,8 +1492,6 @@ tile(Monitor *m)
 {
 	unsigned int i, n = 0, h, mw, my, ty;
 	Client *c;
-
-	fprintf(stderr, "AMC tile\n");
 
 	wl_list_for_each(c, &clients, link)
 		if (VISIBLEON(c, m) && !c->isfloating)
@@ -1718,12 +1640,10 @@ main(int argc, char *argv[])
 	dpy = wl_display_create();
 
 	setup();
-	setupxw();
 	run(startup_cmd);
 
 	/* Once wl_display_run returns, we shut down the server. */
-	if (xwayland)
-		wlr_xwayland_destroy(xwayland);
+	wlr_xwayland_destroy(xwayland);
 	wl_display_destroy_clients(dpy);
 	wl_display_destroy(dpy);
 	return EXIT_SUCCESS;
