@@ -32,6 +32,7 @@
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/util/log.h>
 #include <wlr/xwayland.h>
+#include <X11/Xlib.h>
 #include <xkbcommon/xkbcommon.h>
 
 /* macros */
@@ -46,6 +47,8 @@
 
 /* enums */
 enum { CurNormal, CurMove, CurResize }; /* cursor */
+enum { NetWMWindowTypeDialog, NetWMWindowTypeSplash, NetWMWindowTypeToolbar,
+       NetWMWindowTypeUtility, NetLast }; /* EWMH atoms */
 
 typedef union {
 	int i;
@@ -165,6 +168,7 @@ static Monitor *dirtomon(int dir);
 static void focusclient(Client *c, struct wlr_surface *surface, int lift);
 static void focusmon(const Arg *arg);
 static void focusstack(const Arg *arg);
+static Atom getatom(xcb_connection_t *xc, const char *name);
 static void getxdecomode(struct wl_listener *listener, void *data);
 static void incnmaster(const Arg *arg);
 static void inputdevice(struct wl_listener *listener, void *data);
@@ -202,7 +206,9 @@ static void tile(Monitor *m);
 static void togglefloating(const Arg *arg);
 static void toggletag(const Arg *arg);
 static void toggleview(const Arg *arg);
+static void updatewindowtype(Client *c);
 static void unmapnotify(struct wl_listener *listener, void *data);
+static void xwaylandready(struct wl_listener *listener, void *data);
 static void view(const Arg *arg);
 static Client *xytoclient(double x, double y);
 static Monitor *xytomon(double x, double y);
@@ -235,6 +241,8 @@ static struct wlr_box sgeom;
 static struct wl_list mons;
 static Monitor *selmon;
 
+static Atom netatom[NetLast];
+
 /* global event handlers */
 static struct wl_listener cursor_axis = {.notify = axisnotify};
 static struct wl_listener cursor_button = {.notify = buttonpress};
@@ -249,6 +257,7 @@ static struct wl_listener new_xwayland_surface = {.notify = createnotifyxwayland
 static struct wl_listener request_cursor = {.notify = setcursor};
 static struct wl_listener request_set_psel = {.notify = setpsel};
 static struct wl_listener request_set_sel = {.notify = setsel};
+static struct wl_listener xwayland_ready = {.notify = xwaylandready};
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
@@ -303,6 +312,7 @@ applyrules(Client *c)
 					mon = m;
 		}
 	}
+	updatewindowtype(c);
 	setmon(c, mon, newtags);
 }
 
@@ -513,6 +523,9 @@ createnotifyxwayland(struct wl_listener *listener, void *data)
 	struct wlr_xwayland_surface *xwayland_surface = data;
 	Client *c;
 
+	if (xwayland_surface->override_redirect)
+		return;
+
 	/* Allocate a Client for this surface */
 	c = xwayland_surface->data = calloc(1, sizeof(*c));
 	c->xwayland_surface = xwayland_surface;
@@ -701,6 +714,23 @@ focusstack(const Arg *arg)
 	}
 	/* If only one client is visible on selmon, then c == sel */
 	focusclient(c, NULL, 1);
+}
+
+Atom
+getatom(xcb_connection_t *xc, const char *name)
+{
+	Atom atom;
+	xcb_generic_error_t *error;
+	xcb_intern_atom_cookie_t cookie;
+	xcb_intern_atom_reply_t *reply;
+
+	cookie = xcb_intern_atom(xc, 0, strlen(name), name);
+	reply = xcb_intern_atom_reply(xc, cookie, &error);
+	if (reply != NULL && error == NULL)
+		atom = reply->atom;
+	free(reply);
+
+	return atom;
 }
 
 void
@@ -1443,6 +1473,7 @@ setup(void)
 	 */
 	xwayland = wlr_xwayland_create(dpy, compositor, true);
 	if (xwayland) {
+		wl_signal_add(&xwayland->events.ready, &xwayland_ready);
 		wl_signal_add(&xwayland->events.new_surface, &new_xwayland_surface);
 
 		setenv("DISPLAY", xwayland->display_name, true);
@@ -1562,6 +1593,37 @@ unmapnotify(struct wl_listener *listener, void *data)
 	wl_list_remove(&c->link);
 	wl_list_remove(&c->flink);
 	wl_list_remove(&c->slink);
+}
+
+void
+updatewindowtype(Client *c)
+{
+	size_t i;
+
+	if (!c->isxdg)
+		for (i = 0; i < c->xwayland_surface->window_type_len; i++)
+			if (c->xwayland_surface->window_type[i] == netatom[NetWMWindowTypeDialog] ||
+					c->xwayland_surface->window_type[i] == netatom[NetWMWindowTypeSplash] ||
+					c->xwayland_surface->window_type[i] == netatom[NetWMWindowTypeToolbar] ||
+					c->xwayland_surface->window_type[i] == netatom[NetWMWindowTypeUtility])
+				c->isfloating = 1;
+}
+
+void
+xwaylandready(struct wl_listener *listener, void *data) {
+	xcb_connection_t *xc = xcb_connect(xwayland->display_name, NULL);
+	int err = xcb_connection_has_error(xc);
+	if (err) {
+		fprintf(stderr, "xcb_connect to X server failed with code %d\n. Continuing with degraded functionality.\n", err);
+		return;
+	}
+
+	netatom[NetWMWindowTypeDialog] = getatom(xc, "_NET_WM_WINDOW_TYPE_DIALOG");
+	netatom[NetWMWindowTypeSplash] = getatom(xc, "_NET_WM_WINDOW_TYPE_SPLASH");
+	netatom[NetWMWindowTypeUtility] = getatom(xc, "_NET_WM_WINDOW_TYPE_TOOLBAR");
+	netatom[NetWMWindowTypeToolbar] = getatom(xc, "_NET_WM_WINDOW_TYPE_UTILITY");
+
+	xcb_disconnect(xc);
 }
 
 void
