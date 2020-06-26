@@ -73,6 +73,7 @@ typedef struct {
 		struct wlr_xdg_surface *xdg_surface;
 		struct wlr_xwayland_surface *xwayland_surface;
 	};
+	struct wl_listener activate;
 	struct wl_listener map;
 	struct wl_listener unmap;
 	struct wl_listener destroy;
@@ -149,6 +150,7 @@ struct render_data {
 };
 
 /* function declarations */
+static void activate(struct wl_listener *listener, void *data);
 static void applybounds(Client *c, struct wlr_box *bbox);
 static void applyrules(Client *c);
 static void arrange(Monitor *m);
@@ -263,6 +265,15 @@ static struct wl_listener xwayland_ready = {.notify = xwaylandready};
 #include "config.h"
 
 /* function implementations */
+void
+activate(struct wl_listener *listener, void *data)
+{
+	Client *c = wl_container_of(listener, c, activate);
+
+	if (c && !c->isxdg)
+		wlr_xwayland_surface_activate(c->xwayland_surface, 1);
+}
+
 void
 applybounds(Client *c, struct wlr_box *bbox)
 {
@@ -533,6 +544,8 @@ createnotifyxwayland(struct wl_listener *listener, void *data)
 	c->bw = borderpx;
 
 	/* Listen to the various events it can emit */
+	c->activate.notify = activate;
+	wl_signal_add(&xwayland_surface->events.request_activate, &c->activate);
 	c->map.notify = maprequest;
 	wl_signal_add(&xwayland_surface->events.map, &c->map);
 	c->unmap.notify = unmapnotify;
@@ -661,8 +674,8 @@ focusclient(Client *c, struct wlr_surface *surface, int lift)
 	}
 
 	/*
-	 * If the focused toplevel has changed, deactivate the old one and
-	 * activate the new one.  This lets the clients know to repaint
+	 * If the focused toplevel has changed, deactivate the old one. Always
+	 * activate the current toplevel. This lets the clients know to repaint
 	 * accordingly, e.g. show/hide a caret.
 	 */
 	if (tl != ptl && ptl) {
@@ -671,7 +684,7 @@ focusclient(Client *c, struct wlr_surface *surface, int lift)
 		else
 			wlr_xwayland_surface_activate(ptl->xwayland_surface, 0);
 	}
-	if (tl != ptl && tl) {
+	if (tl) {
 		if (tl->isxdg)
 			wlr_xdg_toplevel_set_activated(tl->xdg_surface, 1);
 		else
