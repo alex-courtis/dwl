@@ -91,14 +91,6 @@ typedef struct {
 } Decoration;
 
 typedef struct {
-	struct wl_list link;
-	struct wlr_xwayland_surface *xwayland_surface;
-	struct wl_listener map;
-	struct wl_listener unmap;
-	struct wl_listener destroy;
-} Independent;
-
-typedef struct {
 	uint32_t mod;
 	xkb_keysym_t keysym;
 	void (*func)(const Arg *);
@@ -545,21 +537,20 @@ createnotifyxwayland(struct wl_listener *listener, void *data)
 {
 	struct wlr_xwayland_surface *xwayland_surface = data;
 	Client *c;
-	Independent *in;
 
 	if (xwayland_surface->override_redirect) {
 
 		/* Allocate an independent for this surface */
-		in = xwayland_surface->data = calloc(1, sizeof(*in));
-		in->xwayland_surface = xwayland_surface;
+		c = xwayland_surface->data = calloc(1, sizeof(*c));
+		c->xwayland_surface = xwayland_surface;
 
 		/* Listen to the various events it can emit */
-		in->map.notify = maprequestindependent;
-		wl_signal_add(&xwayland_surface->events.map, &in->map);
-		in->unmap.notify = unmapnotifyindependent;
-		wl_signal_add(&xwayland_surface->events.unmap, &in->unmap);
-		in->destroy.notify = destroynotifyindependent;
-		wl_signal_add(&xwayland_surface->events.destroy, &in->destroy);
+		c->map.notify = maprequestindependent;
+		wl_signal_add(&xwayland_surface->events.map, &c->map);
+		c->unmap.notify = unmapnotifyindependent;
+		wl_signal_add(&xwayland_surface->events.unmap, &c->unmap);
+		c->destroy.notify = destroynotifyindependent;
+		wl_signal_add(&xwayland_surface->events.destroy, &c->destroy);
 	} else {
 
 		/* Allocate a Client for this surface */
@@ -631,11 +622,11 @@ void
 destroynotifyindependent(struct wl_listener *listener, void *data)
 {
 	/* Called when the surface is destroyed and should never be shown again. */
-	Independent *in = wl_container_of(listener, in, destroy);
-	wl_list_remove(&in->map.link);
-	wl_list_remove(&in->unmap.link);
-	wl_list_remove(&in->destroy.link);
-	free(in);
+	Client *c = wl_container_of(listener, c, destroy);
+	wl_list_remove(&c->map.link);
+	wl_list_remove(&c->unmap.link);
+	wl_list_remove(&c->destroy.link);
+	free(c);
 }
 
 void
@@ -933,9 +924,9 @@ void
 maprequestindependent(struct wl_listener *listener, void *data)
 {
 	/* Called when the surface is mapped, or ready to display on-screen. */
-	Independent *in = wl_container_of(listener, in, map);
+	Client *c = wl_container_of(listener, c, map);
 	/* Insert this independent into independents lists. */
-	wl_list_insert(&independents, &in->link);
+	wl_list_insert(&independents, &c->link);
 }
 
 void
@@ -1182,16 +1173,16 @@ renderclients(Monitor *m, struct timespec *now)
 void
 renderindependents(struct wlr_output *output, struct timespec *now)
 {
-	Independent *in;
+	Client *c;
 	struct render_data rdata;
 	struct wlr_box geom;
 
-	wl_list_for_each_reverse(in, &independents, link)
+	wl_list_for_each_reverse(c, &independents, link)
 	{
-		geom.x = in->xwayland_surface->x;
-		geom.y = in->xwayland_surface->y;
-		geom.width = in->xwayland_surface->width;
-		geom.height = in->xwayland_surface->height;
+		geom.x = c->xwayland_surface->x;
+		geom.y = c->xwayland_surface->y;
+		geom.width = c->xwayland_surface->width;
+		geom.height = c->xwayland_surface->height;
 
 		/* Only render visible clients which show on this output */
 		if (!wlr_output_layout_intersects(output_layout, output, &geom))
@@ -1199,10 +1190,10 @@ renderindependents(struct wlr_output *output, struct timespec *now)
 
 		rdata.output = output,
 		rdata.when = now,
-		rdata.x = in->xwayland_surface->x;
-		rdata.y = in->xwayland_surface->y;
+		rdata.x = c->xwayland_surface->x;
+		rdata.y = c->xwayland_surface->y;
 
-		wlr_surface_for_each_surface(in->xwayland_surface->surface, render, &rdata);
+		wlr_surface_for_each_surface(c->xwayland_surface->surface, render, &rdata);
 	}
 }
 
@@ -1689,8 +1680,8 @@ void
 unmapnotifyindependent(struct wl_listener *listener, void *data)
 {
 	/* Called when the surface is unmapped, and should no longer be shown. */
-	Independent *in = wl_container_of(listener, in, unmap);
-	wl_list_remove(&in->link);
+	Client *c = wl_container_of(listener, c, unmap);
+	wl_list_remove(&c->link);
 }
 
 void
