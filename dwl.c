@@ -91,6 +91,14 @@ typedef struct {
 } Decoration;
 
 typedef struct {
+	struct wl_list link;
+	struct wlr_xwayland_surface *xwayland_surface;
+	struct wl_listener map;
+	struct wl_listener unmap;
+	struct wl_listener destroy;
+} Independent;
+
+typedef struct {
 	uint32_t mod;
 	xkb_keysym_t keysym;
 	void (*func)(const Arg *);
@@ -165,6 +173,7 @@ static void createpointer(struct wlr_input_device *device);
 static void createxdeco(struct wl_listener *listener, void *data);
 static void cursorframe(struct wl_listener *listener, void *data);
 static void destroynotify(struct wl_listener *listener, void *data);
+static void destroynotifyindependent(struct wl_listener *listener, void *data);
 static void destroyxdeco(struct wl_listener *listener, void *data);
 static Monitor *dirtomon(int dir);
 static void focusclient(Client *c, struct wlr_surface *surface, int lift);
@@ -179,6 +188,7 @@ static void keypress(struct wl_listener *listener, void *data);
 static void keypressmod(struct wl_listener *listener, void *data);
 static Client *lastfocused(void);
 static void maprequest(struct wl_listener *listener, void *data);
+static void maprequestindependent(struct wl_listener *listener, void *data);
 static void motionabsolute(struct wl_listener *listener, void *data);
 static void motionnotify(uint32_t time);
 static void motionrelative(struct wl_listener *listener, void *data);
@@ -210,6 +220,7 @@ static void toggletag(const Arg *arg);
 static void toggleview(const Arg *arg);
 static void updatewindowtype(Client *c);
 static void unmapnotify(struct wl_listener *listener, void *data);
+static void unmapnotifyindependent(struct wl_listener *listener, void *data);
 static void xwaylandready(struct wl_listener *listener, void *data);
 static void view(const Arg *arg);
 static Client *xytoclient(double x, double y);
@@ -227,6 +238,7 @@ static struct wlr_xdg_shell *xdg_shell;
 static struct wl_list clients; /* tiling order */
 static struct wl_list fstack;  /* focus order */
 static struct wl_list stack;   /* stacking z-order */
+static struct wl_list independents;
 static struct wlr_xdg_decoration_manager_v1 *xdeco_mgr;
 
 static struct wlr_cursor *cursor;
@@ -533,25 +545,39 @@ createnotifyxwayland(struct wl_listener *listener, void *data)
 {
 	struct wlr_xwayland_surface *xwayland_surface = data;
 	Client *c;
+	Independent *in;
 
-	if (xwayland_surface->override_redirect)
-		return;
+	if (xwayland_surface->override_redirect) {
 
-	/* Allocate a Client for this surface */
-	c = xwayland_surface->data = calloc(1, sizeof(*c));
-	c->xwayland_surface = xwayland_surface;
-	c->isxdg = 0;
-	c->bw = borderpx;
+		/* Allocate an independent for this surface */
+		in = xwayland_surface->data = calloc(1, sizeof(*in));
+		in->xwayland_surface = xwayland_surface;
 
-	/* Listen to the various events it can emit */
-	c->activate.notify = activate;
-	wl_signal_add(&xwayland_surface->events.request_activate, &c->activate);
-	c->map.notify = maprequest;
-	wl_signal_add(&xwayland_surface->events.map, &c->map);
-	c->unmap.notify = unmapnotify;
-	wl_signal_add(&xwayland_surface->events.unmap, &c->unmap);
-	c->destroy.notify = destroynotify;
-	wl_signal_add(&xwayland_surface->events.destroy, &c->destroy);
+		/* Listen to the various events it can emit */
+		in->map.notify = maprequestindependent;
+		wl_signal_add(&xwayland_surface->events.map, &in->map);
+		in->unmap.notify = unmapnotifyindependent;
+		wl_signal_add(&xwayland_surface->events.unmap, &in->unmap);
+		in->destroy.notify = destroynotifyindependent;
+		wl_signal_add(&xwayland_surface->events.destroy, &in->destroy);
+	} else {
+
+		/* Allocate a Client for this surface */
+		c = xwayland_surface->data = calloc(1, sizeof(*c));
+		c->xwayland_surface = xwayland_surface;
+		c->isxdg = 0;
+		c->bw = borderpx;
+
+		/* Listen to the various events it can emit */
+		c->activate.notify = activate;
+		wl_signal_add(&xwayland_surface->events.request_activate, &c->activate);
+		c->map.notify = maprequest;
+		wl_signal_add(&xwayland_surface->events.map, &c->map);
+		c->unmap.notify = unmapnotify;
+		wl_signal_add(&xwayland_surface->events.unmap, &c->unmap);
+		c->destroy.notify = destroynotify;
+		wl_signal_add(&xwayland_surface->events.destroy, &c->destroy);
+	}
 }
 
 void
@@ -599,6 +625,17 @@ destroynotify(struct wl_listener *listener, void *data)
 	wl_list_remove(&c->unmap.link);
 	wl_list_remove(&c->destroy.link);
 	free(c);
+}
+
+void
+destroynotifyindependent(struct wl_listener *listener, void *data)
+{
+	/* Called when the surface is destroyed and should never be shown again. */
+	Independent *in = wl_container_of(listener, in, destroy);
+	wl_list_remove(&in->map.link);
+	wl_list_remove(&in->unmap.link);
+	wl_list_remove(&in->destroy.link);
+	free(in);
 }
 
 void
@@ -893,6 +930,15 @@ maprequest(struct wl_listener *listener, void *data)
 }
 
 void
+maprequestindependent(struct wl_listener *listener, void *data)
+{
+	/* Called when the surface is mapped, or ready to display on-screen. */
+	Independent *in = wl_container_of(listener, in, map);
+	/* Insert this independent into independents lists. */
+	wl_list_insert(&independents, &in->link);
+}
+
+void
 motionabsolute(struct wl_listener *listener, void *data)
 {
 	/* This event is forwarded by the cursor when a pointer emits an _absolute_
@@ -1134,8 +1180,37 @@ renderclients(Monitor *m, struct timespec *now)
 }
 
 void
+renderindependents(struct wlr_output *output, struct timespec *now)
+{
+	Independent *in;
+	struct render_data rdata;
+	struct wlr_box geom;
+
+	wl_list_for_each_reverse(in, &independents, link)
+	{
+		geom.x = in->xwayland_surface->x;
+		geom.y = in->xwayland_surface->y;
+		geom.width = in->xwayland_surface->width;
+		geom.height = in->xwayland_surface->height;
+
+		/* Only render visible clients which show on this output */
+		if (!wlr_output_layout_intersects(output_layout, output, &geom))
+			continue;
+
+		rdata.output = output,
+		rdata.when = now,
+		rdata.x = in->xwayland_surface->x;
+		rdata.y = in->xwayland_surface->y;
+
+		wlr_surface_for_each_surface(in->xwayland_surface->surface, render, &rdata);
+	}
+}
+
+void
 rendermon(struct wl_listener *listener, void *data)
 {
+	struct wlr_output *output = data;
+
 	/* This function is called every time an output is ready to display a frame,
 	 * generally at the output's refresh rate (e.g. 60Hz). */
 	Monitor *m = wl_container_of(listener, m, frame);
@@ -1152,6 +1227,7 @@ rendermon(struct wl_listener *listener, void *data)
 	wlr_renderer_clear(drw, rootcolor);
 
 	renderclients(m, &now);
+	renderindependents(output, &now);
 
 	/* Hardware cursors are rendered by the GPU on a separate plane, and can be
 	 * moved around without re-rendering what's beneath them - which is more
@@ -1425,6 +1501,7 @@ setup(void)
 	wl_list_init(&clients);
 	wl_list_init(&fstack);
 	wl_list_init(&stack);
+	wl_list_init(&independents);
 	xdg_shell = wlr_xdg_shell_create(dpy);
 	wl_signal_add(&xdg_shell->events.new_surface, &new_xdg_surface);
 
@@ -1606,6 +1683,14 @@ unmapnotify(struct wl_listener *listener, void *data)
 	wl_list_remove(&c->link);
 	wl_list_remove(&c->flink);
 	wl_list_remove(&c->slink);
+}
+
+void
+unmapnotifyindependent(struct wl_listener *listener, void *data)
+{
+	/* Called when the surface is unmapped, and should no longer be shown. */
+	Independent *in = wl_container_of(listener, in, unmap);
+	wl_list_remove(&in->link);
 }
 
 void
