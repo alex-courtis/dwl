@@ -1631,10 +1631,14 @@ xwaylandready(struct wl_listener *listener, void *data) {
 		return;
 	}
 
+	/* collect atoms we are interested in */
 	netatom[NetWMWindowTypeDialog] = getatom(xc, "_NET_WM_WINDOW_TYPE_DIALOG");
 	netatom[NetWMWindowTypeSplash] = getatom(xc, "_NET_WM_WINDOW_TYPE_SPLASH");
 	netatom[NetWMWindowTypeUtility] = getatom(xc, "_NET_WM_WINDOW_TYPE_TOOLBAR");
 	netatom[NetWMWindowTypeToolbar] = getatom(xc, "_NET_WM_WINDOW_TYPE_UTILITY");
+
+	/* assign the one and only seat */
+	wlr_xwayland_set_seat(xwayland, seat);
 
 	xcb_disconnect(xc);
 }
