@@ -447,6 +447,8 @@ commitnotify(struct wl_listener *listener, void *data)
 	/* mark a pending resize as completed */
 	if (c->resize && c->resize <= c->surface.xdg->configure_serial)
 		c->resize = 0;
+
+	fprintf(stderr, "AMC commitnotify %p c=%u n=%u r=%u\n", c, c->surface.xdg->configure_serial, c->surface.xdg->configure_next_serial, c->resize);
 }
 
 void
@@ -1232,6 +1234,7 @@ rendermon(struct wl_listener *listener, void *data)
 	/* Do not render if any XDG clients have an outstanding resize. */
 	wl_list_for_each(c, &stack, slink) {
 		if (c->resize) {
+			fprintf(stderr, "AMC rendermon    %p c=%u n=%u r=%u (skipping)\n", c, c->surface.xdg->configure_serial, c->surface.xdg->configure_next_serial, c->resize);
 			wlr_surface_send_frame_done(WLR_SURFACE(c), &now);
 			render = 0;
 		}
@@ -1287,6 +1290,8 @@ resize(Client *c, int x, int y, int w, int h, int interact)
 	else
 		c->resize = wlr_xdg_toplevel_set_size(c->surface.xdg,
 				c->geom.width - 2 * c->bw, c->geom.height - 2 * c->bw);
+
+	fprintf(stderr, "AMC resize       %p c=%u n=%u r=%u\n", c, c->surface.xdg->configure_serial, c->surface.xdg->configure_next_serial, c->resize);
 }
 
 void
